@@ -8,6 +8,7 @@ import (
 	"net"
 	p "path"
 	"reflect"
+	"strings"
 )
 
 const (
@@ -71,7 +72,7 @@ func (s *session) loop() {
 			goto end
 		}
 		if s.server.debug {
-			log.Printf("<- %T %v\n", msg, msg)
+			log.Printf("<- %s %+v\n", strings.SplitN(reflect.TypeOf(msg).String(), ".", 2)[1], msg)
 		}
 		err = s.handleNextMsg(msg)
 		if err != nil {
@@ -97,7 +98,7 @@ func (s *session) clean() {
 
 func (s *session) send(v interface{}) error {
 	if s.server.debug {
-		log.Printf("-> %T %v", v, v)
+		log.Printf("-> %s %+v\n", strings.SplitN(reflect.TypeOf(v).String(), ".", 2)[1], v)
 	}
 	return SerializeMessage(s.conn, v)
 }
