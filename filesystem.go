@@ -41,6 +41,7 @@ type localFile struct {
 	osFile     *os.File
 	osFileInfo os.FileInfo
 	qidPath    uint64
+	isRoot     bool
 }
 
 func NewLocalFilesystem(basePath string) Filesystem {
@@ -65,7 +66,7 @@ func (f *localFilesystem) Open(path string) (File, error) {
 	if fileInfo.IsDir() {
 		_ = file.Close()
 	}
-	return &localFile{file, fileInfo, f.qidPath(path)}, nil
+	return &localFile{file, fileInfo, f.qidPath(path), path == "/"}, nil
 }
 
 func (f *localFilesystem) Create(path string) error { // TODO
@@ -145,11 +146,17 @@ func (f *localFile) IsDir() bool {
 }
 
 func (f *localFile) Stat() (Stat, error) {
+	var name string
+	if f.isRoot {
+		name = "/"
+	} else {
+		name = f.osFile.Name()
+	}
 	return Stat{
 		Qid:    f.Qid(),
 		Mode:   0755 | (uint32(f.Qid().Ftype) << 24),
 		Length: uint64(f.osFileInfo.Size()),
-		Name:   f.osFileInfo.Name(),
+		Name:   name,
 		Uid:    "?",
 		Gid:    "?",
 		Muid:   "",
