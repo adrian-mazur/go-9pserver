@@ -42,19 +42,21 @@ const (
 	DMAPPED = 0x40000000
 	DMEXCL  = 0x20000000
 	DMTDP   = 0x04000000
+
+	ProtocolVersion = "9P2000"
 )
+
+type Qid struct {
+	Ftype   uint8
+	Version uint32
+	Path    uint64
+}
 
 type Tauth struct {
 	Tag   uint16
 	Afid  uint32
 	Uname string
 	Aname string
-}
-
-type Qid struct {
-	Ftype   uint8
-	Version uint32
-	Path    uint64
 }
 
 type Rauth struct {
@@ -159,7 +161,7 @@ type Rstat struct {
 	Stat Stat
 }
 
-type TWstat struct { // TODO
+type Twstat struct { // TODO
 	Tag uint16
 }
 
@@ -275,7 +277,7 @@ func DeserializeMessage(r io.Reader) (interface{}, error) {
 		err = deserializeMessage2(buffer, &msg)
 		return &msg, err
 	case TwstatType:
-		var msg TWstat
+		var msg Twstat
 		err = deserializeMessage2(buffer, &msg)
 		return &msg, err
 	default:
