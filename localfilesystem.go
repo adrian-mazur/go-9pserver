@@ -134,7 +134,7 @@ func (f *localFilesystem) Remove(path string) error {
 }
 
 func (f *localFilesystem) Stat(path string) (Stat, error) {
-	file, err := f.Open(f.normalizePath(path), OREAD)
+	file, err := f.Open(path, OREAD)
 	if err != nil {
 		log.Println(err)
 		return Stat{}, err
