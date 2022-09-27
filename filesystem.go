@@ -3,15 +3,17 @@ package main
 import (
 	"errors"
 	"io"
+	"log"
 	"os"
 	p "path"
+	"strings"
 	"sync"
 )
 
 type Filesystem interface {
-	Open(path string) (File, error)
-	Create(path string) error
-	Write(file File, offset uint64, count uint32, data []byte) error
+	Open(path string, mode uint8) (File, error)
+	CreateDir(path string) error
+	CreateFile(path string) error
 	ReadDir(path string) ([]Stat, error)
 	Remove(path string) error
 	Stat(path string) (Stat, error)
@@ -23,11 +25,14 @@ type File interface {
 	IsDir() bool
 	Stat() (Stat, error)
 	Read(offset uint64, count uint32) ([]byte, error)
+	Write(offset uint64, data []byte) error
 	Close()
 }
 
 var ErrDoesNotExist = errors.New("no such file or directory")
 var ErrIOError = errors.New("i/o error")
+var ErrAlreadyExists = errors.New("file or directory already exists")
+var ErrDirectoryNotEmpty = errors.New("directory not empty")
 
 type localFilesystem struct {
 	basePath string
@@ -51,48 +56,83 @@ func NewLocalFilesystem(basePath string) Filesystem {
 	return &l
 }
 
-func (f *localFilesystem) Open(path string) (File, error) {
-	file, err := os.Open(f.normalizePath(path))
+func (f *localFilesystem) Open(path string, mode uint8) (File, error) {
+	fullPath := f.normalizePath(path)
+	fileInfo, err := os.Stat(fullPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, ErrDoesNotExist
 		}
-		return nil, ErrIOError
-	}
-	fileInfo, err := file.Stat()
-	if err != nil {
+		log.Println(err)
 		return nil, ErrIOError
 	}
 	if fileInfo.IsDir() {
-		_ = file.Close()
+		return &localFile{nil, fileInfo, f.qidPath(path), path == "/"}, nil
+	}
+	modeToFlag := map[uint8]int{OREAD: os.O_RDONLY, OWRITE: os.O_WRONLY, ORDWR: os.O_RDWR}
+	flag := modeToFlag[mode|ORDWR]
+	if mode&OTRUNC != 0 {
+		flag |= os.O_TRUNC
+	}
+	file, err := os.OpenFile(fullPath, flag, os.ModePerm)
+	if err != nil {
+		log.Println(err)
+		return nil, ErrIOError
 	}
 	return &localFile{file, fileInfo, f.qidPath(path), path == "/"}, nil
 }
 
-func (f *localFilesystem) Create(path string) error { // TODO
+func (f *localFilesystem) CreateDir(path string) error {
+	fullPath := f.normalizePath(path)
+	if _, err := os.Stat(fullPath); !errors.Is(err, os.ErrNotExist) {
+		return ErrAlreadyExists
+	}
+	err := os.Mkdir(fullPath, os.ModePerm)
+	if err != nil {
+		log.Println(err)
+		return ErrIOError
+	}
 	return nil
 }
 
-func (f *localFilesystem) Write(file File, offset uint64, count uint32, data []byte) error { // TODO
+func (f *localFilesystem) CreateFile(path string) error {
+	fullPath := f.normalizePath(path)
+	if _, err := os.Stat(fullPath); !errors.Is(err, os.ErrNotExist) {
+		return ErrAlreadyExists
+	}
+	file, err := os.Create(fullPath)
+	if err != nil {
+		log.Println(err)
+		return ErrIOError
+	}
+	_ = file.Close()
 	return nil
 }
 
 func (f *localFilesystem) ReadDir(path string) ([]Stat, error) {
 	entries, err := os.ReadDir(f.normalizePath(path))
 	if err != nil {
+		log.Println(err)
 		return nil, ErrIOError
 	}
 	stats := make([]Stat, len(entries))
 	for i, entry := range entries {
 		fileInfo, err := entry.Info()
 		if err != nil {
+			log.Println(err)
 			return nil, ErrIOError
 		}
 		qid := Qid{qidFtype(fileInfo.IsDir()), uint32(fileInfo.ModTime().Unix()), f.qidPath(p.Join(path, fileInfo.Name()))}
+		var length uint64
+		if fileInfo.IsDir() {
+			length = 0
+		} else {
+			length = uint64(fileInfo.Size())
+		}
 		stats[i] = Stat{
 			Qid:    qid,
 			Mode:   0755 | (uint32(qid.Ftype) << 24),
-			Length: uint64(fileInfo.Size()),
+			Length: length,
 			Name:   fileInfo.Name(),
 			Uid:    "?",
 			Gid:    "?",
@@ -104,13 +144,23 @@ func (f *localFilesystem) ReadDir(path string) ([]Stat, error) {
 	return stats, nil
 }
 
-func (f *localFilesystem) Remove(path string) error { // TODO
-	return nil
+func (f *localFilesystem) Remove(path string) error {
+	fullPath := f.normalizePath(path)
+	err := os.Remove(fullPath)
+	if err != nil {
+		if strings.Contains(err.Error(), "not empty") {
+			return ErrDirectoryNotEmpty
+		}
+		log.Println(err)
+		return ErrIOError
+	}
+	return err
 }
 
 func (f *localFilesystem) Stat(path string) (Stat, error) {
-	file, err := f.Open(path)
+	file, err := f.Open(f.normalizePath(path), OREAD)
 	if err != nil {
+		log.Println(err)
 		return Stat{}, err
 	}
 	defer file.Close()
@@ -150,7 +200,7 @@ func (f *localFile) Stat() (Stat, error) {
 	if f.isRoot {
 		name = "/"
 	} else {
-		name = f.osFile.Name()
+		name = f.osFileInfo.Name()
 	}
 	return Stat{
 		Qid:    f.Qid(),
@@ -169,9 +219,19 @@ func (f *localFile) Read(offset uint64, count uint32) ([]byte, error) {
 	buffer := make([]byte, count)
 	n, err := f.osFile.ReadAt(buffer, int64(offset))
 	if err != nil && !errors.Is(err, io.EOF) {
+		log.Println(err)
 		return nil, ErrIOError
 	}
 	return buffer[:n], nil
+}
+
+func (f *localFile) Write(offset uint64, data []byte) error {
+	_, err := f.osFile.WriteAt(data, int64(offset))
+	if err != nil {
+		log.Println(err)
+		return ErrIOError
+	}
+	return nil
 }
 
 func (f *localFile) Close() {

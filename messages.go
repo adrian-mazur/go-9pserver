@@ -43,6 +43,13 @@ const (
 	DMEXCL  = 0x20000000
 	DMTDP   = 0x04000000
 
+	OREAD   = 0
+	OWRITE  = 1
+	ORDWR   = 2
+	OEXEC   = 3
+	OTRUNC  = 0x10
+	ORCLOSE = 0x40
+
 	ProtocolVersion = "9P2000"
 )
 
@@ -133,8 +140,11 @@ type Rread struct {
 	Data []byte
 }
 
-type Twrite struct { // TODO
-	Tag uint16
+type Twrite struct {
+	Tag    uint16
+	Fid    uint32
+	Offset uint64
+	Data   []byte
 }
 
 type Rwrite struct {
@@ -161,8 +171,10 @@ type Rstat struct {
 	Stat Stat
 }
 
-type Twstat struct { // TODO
-	Tag uint16
+type Twstat struct {
+	Tag  uint16
+	Fid  uint32
+	Stat Stat
 }
 
 type Rwstat struct {
@@ -292,13 +304,6 @@ func deserializeMessage2(r io.Reader, value any) error {
 func deserializeMessage3(r io.Reader, v reflect.Value) error {
 	for i := 0; i < v.NumField(); i++ {
 		f := v.Field(i)
-		if f.Kind() == reflect.Struct {
-			err := deserializeMessage3(r, f)
-			if err != nil {
-				return err
-			}
-			continue
-		}
 		fi := f.Interface()
 		switch fi.(type) {
 		case uint8:
@@ -344,7 +349,36 @@ func deserializeMessage3(r io.Reader, v reflect.Value) error {
 				}
 			}
 			f.Set(reflect.ValueOf(arr))
+		case []byte:
+			count, err := readUint[uint32](r)
+			if err != nil {
+				return err
+			}
+			buff, err := readBuff(r, int64(count))
+			if err != nil {
+				return err
+			}
+			f.Set(reflect.ValueOf(buff))
+		case Stat:
+			_, err := readUint[uint16](r)
+			if err != nil {
+				return err
+			}
+			_, err = readUint[uint16](r)
+			if err != nil {
+				return err
+			}
+			var stat Stat
+			deserializeMessage3(r, reflect.ValueOf(&stat).Elem())
+			f.Set(reflect.ValueOf(stat))
 		default:
+			if f.Kind() == reflect.Struct {
+				err := deserializeMessage3(r, f)
+				if err != nil {
+					return err
+				}
+				continue
+			}
 			return fmt.Errorf("unknown field type: %s", f.Type().String())
 		}
 	}
@@ -496,7 +530,7 @@ func getRMessageType(v interface{}) uint8 {
 	return 0
 }
 
-func readBuff(r io.Reader, size int) ([]byte, error) {
+func readBuff(r io.Reader, size int64) ([]byte, error) {
 	buff := make([]byte, size)
 	_, err := io.ReadFull(r, buff)
 	if err != nil {
@@ -520,7 +554,7 @@ func readString(r io.Reader) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	str, err := readBuff(r, int(strSize))
+	str, err := readBuff(r, int64(strSize))
 	if err != nil {
 		return "", err
 	}

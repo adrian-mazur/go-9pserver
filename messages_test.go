@@ -33,6 +33,30 @@ func TestDeserializingMessages(t *testing.T) {
 	if authMsg.Aname != authMsgExcepted.Aname {
 		t.Errorf("got %s, want %s", authMsg.Aname, authMsgExcepted.Aname)
 	}
+
+	input, err = hex.DecodeString("3A0000007E00000100000031002F00FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFBA0E3263BA0E3263FFFFFFFFFFFFFFFF0000000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader = bytes.NewReader(input)
+	msg, err = DeserializeMessage(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	twstatMsg, ok := msg.(*Twstat)
+	if !ok {
+		t.Fatalf("wrong message type, got %T, want *Twstat", msg)
+	}
+	twstatExcepted := Twstat{Tag: 0, Fid: 1, Stat: Stat{Length: 0xFFFFFFFFFFFFFFFF}}
+	if twstatMsg.Tag != twstatExcepted.Tag {
+		t.Errorf("got %d, want %d", twstatMsg.Tag, twstatExcepted.Tag)
+	}
+	if twstatMsg.Fid != twstatExcepted.Fid {
+		t.Errorf("got %d, want %d", twstatMsg.Fid, twstatExcepted.Fid)
+	}
+	if twstatMsg.Stat.Length != twstatExcepted.Stat.Length {
+		t.Errorf("got %d, want %d", twstatMsg.Stat.Length, twstatExcepted.Stat.Length)
+	}
 }
 
 func TestSerializingMessages(t *testing.T) {

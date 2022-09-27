@@ -16,8 +16,10 @@ const (
 
 	ENoAuthRequiredStr        = "no authentication required"
 	EIOErrorStr               = "i/o error"
-	ENoSuchFileOrDirectoryStr = "No such file or directory"
-	EBadMessageStr            = "Bad message"
+	ENoSuchFileOrDirectoryStr = "file does not exist"
+	EBadMessageStr            = "protocol botch"
+	EAlreadyExistsStr         = "file or directory already exists"
+	EDirNotEmptyStr           = "directory is not empty"
 )
 
 var ErrInvalidFid = errors.New("invalid fid")
@@ -175,6 +177,10 @@ func (s *session) handleNextMsg(msg interface{}) error {
 		return s.sendError(tag, ENoSuchFileOrDirectoryStr)
 	case ErrInvalidFid:
 		return s.sendError(tag, EBadMessageStr)
+	case ErrAlreadyExists:
+		return s.sendError(tag, EAlreadyExistsStr)
+	case ErrDirectoryNotEmpty:
+		return s.sendError(tag, EDirNotEmptyStr)
 	default:
 		return err
 	}
@@ -205,12 +211,31 @@ func (s *session) handleClunk(m *Tclunk) error {
 	return s.send(&Rclunk{Tag: m.Tag})
 }
 
-func (s *session) handleCreate(m *Tcreate) error { // TODO
-	return nil
+func (s *session) handleCreate(m *Tcreate) error {
+	isDir := (m.Perm & DMDIR) == DMDIR
+	path, _, err := s.getFid(m.Fid)
+	if err != nil {
+		return err
+	}
+	fullPath := p.Join(path, m.Name)
+	if isDir {
+		err = s.server.filesystem.CreateDir(fullPath)
+	} else {
+		err = s.server.filesystem.CreateFile(fullPath)
+	}
+	if err != nil {
+		return err
+	}
+	f, err := s.server.filesystem.Open(fullPath, ORDWR)
+	if err != nil {
+		return err
+	}
+	s.setFid(m.Fid, fullPath, f)
+	return s.send(&Rcreate{Qid: f.Qid(), Iouint: 0})
 }
 
-func (s *session) handleFlush(m *Tflush) error { // TODO
-	return nil
+func (s *session) handleFlush(m *Tflush) error {
+	return s.send(&Rflush{Tag: m.Tag})
 }
 
 func (s *session) handleOpen(m *Topen) error {
@@ -218,7 +243,7 @@ func (s *session) handleOpen(m *Topen) error {
 	if err != nil {
 		return err
 	}
-	file, err := s.server.filesystem.Open(path)
+	file, err := s.server.filesystem.Open(path, m.Mode)
 	if err != nil {
 		return err
 	}
@@ -251,6 +276,18 @@ func (s *session) handleReadFile(m *Tread, file File) error {
 
 func (s *session) handleReadDir(m *Tread, path string) error {
 	buffer := new(bytes.Buffer)
+	dotStat, err := s.server.filesystem.Stat(p.Join(path, "."))
+	if err != nil {
+		return err
+	}
+	dotStat.Name = "."
+	dotStat.Serialize(buffer)
+	dotDotStat, err := s.server.filesystem.Stat(p.Join(path, ".."))
+	if err != nil {
+		return err
+	}
+	dotDotStat.Name = ".."
+	dotDotStat.Serialize(buffer)
 	stats, err := s.server.filesystem.ReadDir(path)
 	if err != nil {
 		return err
@@ -267,8 +304,20 @@ func (s *session) handleReadDir(m *Tread, path string) error {
 	return s.send(&Rread{Tag: m.Tag, Data: data})
 }
 
-func (s *session) handleRemove(m *Tremove) error { // TODO
-	return nil
+func (s *session) handleRemove(m *Tremove) error {
+	path, f, err := s.getFid(m.Fid)
+	if err != nil {
+		return err
+	}
+	if f != nil {
+		f.Close()
+	}
+	s.deleteFid(m.Fid)
+	err = s.server.filesystem.Remove(path)
+	if err != nil {
+		return err
+	}
+	return s.send(&Rremove{Tag: m.Tag})
 }
 
 func (s *session) handleStat(m *Tstat) error {
@@ -314,10 +363,29 @@ func (s *session) handleWalk(m *Twalk) error {
 	return s.send(&Rwalk{Tag: m.Tag, Nwqid: result})
 }
 
-func (s *session) handleWrite(m *Twrite) error { // TODO
-	return nil
+func (s *session) handleWrite(m *Twrite) error {
+	_, file, err := s.getFid(m.Fid)
+	if err != nil {
+		return err
+	}
+	if file == nil {
+		return ErrInvalidFid
+	}
+	err = file.Write(m.Offset, m.Data)
+	if err != nil {
+		return err
+	}
+	return s.send(&Rwrite{Tag: m.Tag, Count: uint32(len(m.Data))})
 }
 
-func (s *session) handleWstat(m *Twstat) error { // TODO
-	return nil
+func (s *session) handleWstat(m *Twstat) error {
+	path, _, err := s.getFid(m.Fid)
+	if err != nil {
+		return err
+	}
+	err = s.server.filesystem.Wstat(path, m.Stat)
+	if err != nil {
+		return err
+	}
+	return s.send(&Rwstat{Tag: m.Tag})
 }
